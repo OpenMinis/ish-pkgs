@@ -148,7 +148,7 @@ echo "== 6/6 写来源声明并打包"
   fi
   echo
   echo "files (sha256):"
-  ( cd "$STAGE" && for f in *; do echo "  $(shasum -a 256 "$f" | cut -d' ' -f1)  $f"; done )
+  ( cd "$STAGE" && for f in *; do [ "$f" = PROVENANCE.txt ] && continue; echo "  $(shasum -a 256 "$f" | cut -d' ' -f1)  $f"; done )
 } > "$STAGE/PROVENANCE.txt"
 
 rm -f "$OUT/$NAME-$TAG.zip"

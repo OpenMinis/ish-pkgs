@@ -34,10 +34,13 @@ Updating is the normal apk flow: `apk update && apk upgrade`.
 
 ## Status
 
-> **Work in progress: the signed package index is not published yet.**
-> This repository currently holds the build/packaging tooling and the signing public key only.
-> `apk add pair-host` will not work until `aarch64/` (the `.apk` files and the signed `APKINDEX.tar.gz`)
-> has been built from a clean build and committed. Check the commit history for when that lands.
+`aarch64/` holds the signed index and the packages built from upstream **v0.1.68** (unmodified source, see
+the `PROVENANCE.txt` shipped inside each package). The apk flow below has been exercised end to end against a
+local HTTP copy of this repository: untrusted-signature rejection, public-key trust, search, install, running
+the binary, dependency pull-in, and clean removal.
+
+Not yet verified: fetching from the public GitHub address (this repository may be private while you read this,
+in which case `raw.githubusercontent.com` returns 404).
 
 ## Packages
 
