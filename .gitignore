@@ -1,0 +1,18 @@
+# 签名私钥绝不能进仓库。公钥(*.rsa.pub)可以。
+*.rsa
+*.pem
+*.key
+*.p12
+*.p8
+*.mobileprovision
+id_rsa*
+.env
+.env.*
+
+# 构建产物与中间文件(产物走 Release 或明确放进 aarch64/,不要随手 git add .)
+dist/
+*.zip
+*.tgz
+*.log
+__pycache__/
+.DS_Store

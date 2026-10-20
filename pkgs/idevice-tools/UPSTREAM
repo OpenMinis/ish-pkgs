@@ -1,0 +1,6 @@
+name=idevice
+url=https://github.com/jkcoxson/idevice
+license=MIT
+crate=tools
+# 当前基于的上游 tag。update.sh 会读取并(经你确认后)改写这一行。
+tag=v0.1.68
