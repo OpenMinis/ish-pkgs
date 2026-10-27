@@ -1,0 +1,33 @@
+diff --git a/cmd/common.go b/cmd/common.go
+index b419e7a..84b8acb 100644
+--- a/cmd/common.go
++++ b/cmd/common.go
+@@ -1,7 +1,6 @@
+ package cmd
+ 
+ import (
+-	"errors"
+ 	"fmt"
+ 	"io"
+ 	"os"
+@@ -70,14 +69,18 @@ func newKeychain(stateDirectory string, interactive bool) keychain.Keychain {
+ 		KeychainTrustApplication: true,
+ 		FileDir:                  stateDirectory,
+ 		FilePasswordFunc: func(s string) (string, error) {
+-			if keychainPassphrase == "" && !interactive {
+-				return "", errors.New("keychain passphrase is required when not running in interactive mode; use the \"--keychain-passphrase\" flag")
++			if envPass := os.Getenv("IPATOOL_KEYCHAIN_PASSPHRASE"); envPass != "" {
++				return envPass, nil
+ 			}
+ 
+ 			if keychainPassphrase != "" {
+ 				return keychainPassphrase, nil
+ 			}
+ 
++			if !interactive {
++				return "minis", nil
++			}
++
+ 			path := strings.Split(s, " unlock ")[1]
+ 			password, err := readPrompt(fmt.Sprintf("enter passphrase to unlock %s (this is separate from your Apple ID password): ", path), true)
+ 			if err != nil {

@@ -1,0 +1,13 @@
+diff --git a/cmd/auth.go b/cmd/auth.go
+index 7099ab0..a25e77a 100644
+--- a/cmd/auth.go
++++ b/cmd/auth.go
+@@ -132,6 +132,8 @@ func infoCmd() *cobra.Command {
+ 			dependencies.Logger.Log().
+ 				Str("name", output.Account.Name).
+ 				Str("email", output.Account.Email).
++				Str("storeFront", output.Account.StoreFront).
++				Str("dsid", output.Account.DirectoryServicesID).
+ 				Bool("success", true).
+ 				Send()
+ 

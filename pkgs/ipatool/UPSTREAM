@@ -1,0 +1,5 @@
+name=ipatool
+url=https://github.com/majd/ipatool
+license=MIT
+# 当前基于的上游 tag。update.sh 会读取并(经你确认后)改写这一行。
+tag=v2.7.0

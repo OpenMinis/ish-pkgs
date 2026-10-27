@@ -22,6 +22,7 @@ echo "https://raw.githubusercontent.com/OpenMinis/ish-pkgs/main" >> /etc/apk/rep
 apk update
 apk add pair-host            # just pair_host (~0.85 MB)
 apk add idevice-tools        # the rest of idevice-tools; pulls in pair-host
+apk add ipatool              # search, purchase and download App Store IPAs (~10.9 MB)
 ```
 
 Verify the key you downloaded before trusting it:
@@ -48,6 +49,7 @@ in which case `raw.githubusercontent.com` returns 404).
 |---|---|---|
 | `pair-host` | `pair_host`: advertise as an iOS 27 pairable host and write a pairing file | [jkcoxson/idevice](https://github.com/jkcoxson/idevice) (MIT) |
 | `idevice-tools` | `idevice-tools`, `idevice_id`, `iproxy`, `pair_apple_tv` (depends on `pair-host`) | same |
+| `ipatool` | `ipatool`: search, purchase and download App Store IPAs | [majd/ipatool](https://github.com/majd/ipatool) (MIT) |
 
 `apk del idevice-tools` also removes `pair-host` unless you installed it explicitly (`apk add pair-host`).
 
@@ -59,6 +61,10 @@ in which case `raw.githubusercontent.com` returns 404).
   `com.apple.developer.networking.multicast` entitlement, so **from inside the iOS app the advertisement
   does not leave the phone**. Use it on a Mac/Linux host, or have the app publish the service
   (see `minis-bonjour`) and run `pair_host` for the protocol part.
+- `ipatool` on iOS/iSH:
+  - iOS privacy masks all network interface MAC addresses to `02:00:00:00:00:00`. Our build includes a fallback and supports `IPATOOL_MAC_ADDRESS` environment variable override.
+  - Non-interactive mode uses a local FileBackend keyring. Supports `IPATOOL_KEYCHAIN_PASSPHRASE` environment variable (defaults to `minis` if unset).
+  - Dynamically linked against musl libc so Unicorn's JIT engine can be loaded via `dlopen`. Requires Minis build with 64-bit ADRP fix in Asbestos for SAP handshake to succeed.
 
 ## How binaries are built
 
@@ -84,6 +90,7 @@ tools/publish.sh dist/idevice-tools-ish-arm64-v0.1.68.zip v0.1.68    # apk packa
 | package | version | upstream | commit | modifications |
 |---|---|---|---|---|
 | `pair-host`, `idevice-tools` | `0.1.68-r0` | `v0.1.68` | `d32c8189` | none |
+| `ipatool` | `2.7.0-r1` | `v2.7.0` | `4484b55d` | 3 patches (MAC fallback, keychain passphrase env, auth info storefront) |
 
 Version scheme: `<upstream version>-r<N>`. `N` increases when we rebuild or patch without an upstream change.
 

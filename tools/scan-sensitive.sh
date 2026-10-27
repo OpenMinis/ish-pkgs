@@ -48,7 +48,7 @@ xox[bp]-[A-Za-z0-9-]{10,}
 #       10.7.0.0 / 10.7.0.1 是 LocalDevVPN/Surge/SideStore 约定的公共回环地址(所有人一样),不算个人信息;
 #       只放行这两个具体地址,不放行整个 10.x;
 #       example.com / localhost / noreply 类邮箱域名也不算。
-ALLOW='/home/builder|/Users/builder|10\.7\.0\.[01]([^0-9]|$)|@example\.(com|org)|@localhost|noreply@|@users\.noreply\.github\.com|127\.0\.0\.1|0\.0\.0\.0'
+ALLOW='/home/builder|/Users/builder|10\.7\.0\.[01]([^0-9]|$)|@example\.(com|org)|@localhost|noreply@|@users\.noreply\.github\.com|127\.0\.0\.1|0\.0\.0\.0|02:00:00:00:00:0[01]'
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 n=0

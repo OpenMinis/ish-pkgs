@@ -1,0 +1,47 @@
+diff --git a/pkg/util/machine/mac_address.go b/pkg/util/machine/mac_address.go
+index b0dd2f4..7f7ce2d 100644
+--- a/pkg/util/machine/mac_address.go
++++ b/pkg/util/machine/mac_address.go
+@@ -3,8 +3,8 @@ package machine
+ import (
+ 	"bytes"
+ 	"errors"
+-	"fmt"
+ 	"net"
++	"os"
+ )
+ 
+ const (
+@@ -25,6 +25,11 @@ func usableMacAddress(address net.HardwareAddr) bool {
+ }
+ 
+ func selectMacAddress(interfaces []net.Interface, lookup func(net.Interface) (macAddressCandidate, error)) (string, error) {
++	if envMac := os.Getenv("IPATOOL_MAC_ADDRESS"); envMac != "" {
++		if hw, err := net.ParseMAC(envMac); err == nil && len(hw) == 6 {
++			return hw.String(), nil
++		}
++	}
+ 	var (
+ 		selected  macAddressCandidate
+ 		lookupErr error
+@@ -58,9 +63,17 @@ func selectMacAddress(interfaces []net.Interface, lookup func(net.Interface) (ma
+ 		return selected.address.String(), nil
+ 	}
+ 
+-	if lookupErr != nil {
+-		return "", fmt.Errorf("could not find network interfaces with a valid mac address: %w", lookupErr)
++	// Fallback for sandboxed or virtualized environments (e.g. iOS / iSH where all
++	// network interfaces have their MAC address masked as 02:00:00:00:00:00).
++	for _, networkInterface := range interfaces {
++		if len(networkInterface.HardwareAddr) == 6 && !bytes.Equal(networkInterface.HardwareAddr, []byte{0, 0, 0, 0, 0, 0}) {
++			addr := append([]byte(nil), networkInterface.HardwareAddr...)
++			if bytes.Equal(addr, []byte{0x02, 0, 0, 0, 0, 0}) {
++				addr[5] = 0x01
++			}
++			return net.HardwareAddr(addr).String(), nil
++		}
+ 	}
+ 
+-	return "", errors.New("could not find network interfaces with a valid mac address")
++	return "02:00:00:00:00:01", nil
+ }
