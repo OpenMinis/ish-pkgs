@@ -1,0 +1,15 @@
+diff --git a/src/officecli/Core/UpdateChecker.cs b/src/officecli/Core/UpdateChecker.cs
+index 82903bc..f4f7111 100644
+--- a/src/officecli/Core/UpdateChecker.cs
++++ b/src/officecli/Core/UpdateChecker.cs
+@@ -808,6 +808,10 @@ internal static class UpdateChecker
+     /// </summary>
+     internal static string? PackageManagerName(string? exePath)
+     {
++        // ish-pkgs: this build is only shipped as an apk package. apk owns the
++        // binary, so it must never replace itself (the official download has no
++        // ReadyToRun code and would undo the reason this build exists).
++        if (OperatingSystem.IsLinux()) return "apk (ish-pkgs)";
+         if (string.IsNullOrEmpty(exePath)) return null;
+         var candidates = new List<string> { exePath };
+         try
