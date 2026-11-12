@@ -4,6 +4,7 @@
 # 用法:  tools/publish.sh <zip 路径> <tag>
 #   例:  tools/publish.sh pkgs/idevice-tools/dist/idevice-tools-ish-arm64-v0.1.68.zip v0.1.68
 #        tools/publish.sh pkgs/ipatool/dist/ipatool-ish-arm64-v2.7.0.zip v2.7.0
+#        tools/publish.sh pkgs/officecli/dist/officecli-ish-arm64-v1.0.160.zip v1.0.160
 # 私钥:  ISH_PKGS_KEY(默认 ~/.ish-pkgs/ish-pkgs.rsa),绝不进仓库
 set -eu
 ZIP="${1:?用法: $0 <zip> <tag>}"; TAG="${2:?}"
@@ -14,6 +15,7 @@ ARCH=aarch64
 
 case "$ZIP" in
   *ipatool*) PKG_DIR="$REPO/pkgs/ipatool" ;;
+  *officecli*) PKG_DIR="$REPO/pkgs/officecli" ;;
   *)         PKG_DIR="$REPO/pkgs/idevice-tools" ;;
 esac
 
@@ -22,6 +24,7 @@ esac
 NPATCH=$(ls "$PKG_DIR/patches/"*.patch 2>/dev/null | wc -l | tr -d " ")
 if [ "${NPATCH:-0}" -gt 0 ]; then REV=1; else REV=0; fi
 VER="${TAG#v}-r${REV}"
+LICENSE_ID="$(sed -n 's/^license=//p' "$PKG_DIR/UPSTREAM" | head -1)"; LICENSE_ID="${LICENSE_ID:-MIT}"
 
 [ -f "$KEY" ] || { echo "缺少签名私钥: $KEY" >&2; echo "生成: mkdir -p ~/.ish-pkgs && umask 077 && openssl genrsa -out $KEY 4096 && openssl rsa -in $KEY -pubout -out $REPO/$KEYNAME.rsa.pub" >&2; exit 1; }
 [ -f "$REPO/$KEYNAME.rsa.pub" ] || { echo "缺少公钥 $REPO/$KEYNAME.rsa.pub" >&2; exit 1; }
@@ -40,11 +43,15 @@ mk() {  # mk <包名> <描述> <依赖(逗号分隔,可空)> <文件...>
   root="$T/root-$name"; mkdir -p "$root/usr/local/bin" "$root/usr/share/doc/$name"
   for f in "$@"; do install -m755 "$T/x/$f" "$root/usr/local/bin/$f"; done
   cp "$PROV" "$root/usr/share/doc/$name/PROVENANCE.txt"
+  # 上游要求随二进制分发的声明文件(Apache-2.0 的 NOTICE 等),build.sh 放进 zip 就带上
+  for d in NOTICE THIRD-PARTY-NOTICES.txt; do
+    if [ -f "$T/x/$d" ]; then cp "$T/x/$d" "$root/usr/share/doc/$name/$d"; fi
+  done
   if [ -f "$PKG_DIR/LICENSE.upstream" ]; then
     cp "$PKG_DIR/LICENSE.upstream" "$root/usr/share/doc/$name/LICENSE"
   fi
   rm -f "$OUT/$name-"*.apk
-  python3 "$HERE/mkapk.py" "$root" "$name" "$VER" "$ARCH" "$desc" MIT "$OUT/$name-$VER.apk" "$deps" >/dev/null
+  python3 "$HERE/mkapk.py" "$root" "$name" "$VER" "$ARCH" "$desc" "$LICENSE_ID" "$OUT/$name-$VER.apk" "$deps" >/dev/null
   echo "  $name-$VER.apk ($(wc -c < "$OUT/$name-$VER.apk") 字节)"
 }
 
@@ -52,6 +59,9 @@ echo "== 打包 ($TAG, $MOD)"
 case "$ZIP" in
   *ipatool*)
     mk ipatool "Command-line tool to search and download App Store IPAs (adapted for iSH arm64)" "" ipatool
+    ;;
+  *officecli*)
+    mk officecli "OfficeCLI $TAG for iSH arm64: create and edit Word/Excel/PowerPoint files (ReadyToRun build)" "libgcc,libstdc++,icu-libs" officecli
     ;;
   *)
     mk pair-host     "idevice pair_host $TAG for iSH arm64: iOS 27 host-side pairing"                 ""          pair_host

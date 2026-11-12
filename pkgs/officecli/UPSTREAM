@@ -1,0 +1,5 @@
+name=officecli
+url=https://github.com/iOfficeAI/OfficeCLI
+license=Apache-2.0
+# 当前基于的上游 tag。update.sh 会读取并(经你确认后)改写这一行。
+tag=v1.0.160
