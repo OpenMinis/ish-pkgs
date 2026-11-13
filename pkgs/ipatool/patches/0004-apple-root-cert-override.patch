@@ -1,0 +1,132 @@
+diff --git a/internal/storeauth/http_client.go b/internal/storeauth/http_client.go
+index d3d8d10..f1d7371 100644
+--- a/internal/storeauth/http_client.go
++++ b/internal/storeauth/http_client.go
+@@ -6,16 +6,21 @@ import (
+ 	"context"
+ 	"crypto/tls"
+ 	"crypto/x509"
++	"encoding/pem"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+ 	"net/http"
++	"net/url"
++	"os"
+ 	"time"
+ )
+ 
+ const (
+-	appleRootURL  = "https://www.apple.com/appleca/AppleIncRootCertificate.cer"
+-	rootSizeLimit = 64 << 10
++	appleRootURL    = "https://www.apple.com/appleca/AppleIncRootCertificate.cer"
++	appleRootEnv    = "IPATOOL_APPLE_ROOT_CERT" // local DER/PEM file, skips the download
++	appleRootURLEnv = "IPATOOL_APPLE_ROOT_URL"  // mirror URL, e.g. when www.apple.com is blocked
++	rootSizeLimit   = 64 << 10
+ )
+ 
+ // NewHTTPClient returns the isolated client used for Apple authentication.
+@@ -39,17 +44,46 @@ func isUnknownAuthority(err error) bool {
+ 	return errors.As(err, &unknown)
+ }
+ 
+-func installAppleRoot(ctx context.Context, client *http.Client) error {
+-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, appleRootURL, nil)
++func appleRootSource() string {
++	if source := os.Getenv(appleRootURLEnv); source != "" {
++		return source
++	}
++
++	return appleRootURL
++}
++
++// fetchAppleRoot reads the root from a local file when IPATOOL_APPLE_ROOT_CERT is set,
++// so the tool still works on networks where www.apple.com is unreachable or blocked.
++func fetchAppleRoot(ctx context.Context) ([]byte, error) {
++	if path := os.Getenv(appleRootEnv); path != "" {
++		data, err := os.ReadFile(path)
++		if err != nil {
++			return nil, fmt.Errorf("read Apple root file: %w", err)
++		}
++		if len(data) > rootSizeLimit {
++			return nil, errors.New("apple root exceeds size limit")
++		}
++
++		return data, nil
++	}
++
++	source := appleRootSource()
++
++	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+ 	if err != nil {
+-		return fmt.Errorf("create Apple root request: %w", err)
++		return nil, fmt.Errorf("create Apple root request: %w", err)
++	}
++
++	trustedHost := ""
++	if parsed, parseErr := url.Parse(source); parseErr == nil {
++		trustedHost = parsed.Hostname()
+ 	}
+ 
+ 	downloader := &http.Client{
+ 		Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
+ 		Timeout:   15 * time.Second,
+ 		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+-			if request.URL.Scheme != "https" || request.URL.Hostname() != "www.apple.com" {
++			if request.URL.Scheme != "https" || request.URL.Hostname() != trustedHost {
+ 				return errors.New("apple root redirect is not trusted")
+ 			}
+ 
+@@ -59,25 +93,47 @@ func installAppleRoot(ctx context.Context, client *http.Client) error {
+ 
+ 	response, err := downloader.Do(request)
+ 	if err != nil {
+-		return fmt.Errorf("download Apple root: %w", err)
++		return nil, fmt.Errorf("download Apple root: %w", err)
+ 	}
+ 	defer response.Body.Close()
+ 
+ 	if response.StatusCode != http.StatusOK {
+-		return fmt.Errorf("download Apple root: HTTP %d", response.StatusCode)
++		return nil, fmt.Errorf("download Apple root: HTTP %d", response.StatusCode)
+ 	}
+ 
+ 	data, err := io.ReadAll(io.LimitReader(response.Body, rootSizeLimit+1))
+ 	if err != nil {
+-		return fmt.Errorf("read Apple root: %w", err)
++		return nil, fmt.Errorf("read Apple root: %w", err)
+ 	}
+ 	if len(data) > rootSizeLimit {
+-		return errors.New("apple root exceeds size limit")
++		return nil, errors.New("apple root exceeds size limit")
++	}
++
++	return data, nil
++}
++
++func parseAppleRoot(data []byte) (*x509.Certificate, error) {
++	if block, _ := pem.Decode(data); block != nil {
++		data = block.Bytes
+ 	}
+ 
+ 	certificate, err := x509.ParseCertificate(data)
+ 	if err != nil {
+-		return fmt.Errorf("parse Apple root: %w", err)
++		return nil, fmt.Errorf("parse Apple root: %w", err)
++	}
++
++	return certificate, nil
++}
++
++func installAppleRoot(ctx context.Context, client *http.Client) error {
++	data, err := fetchAppleRoot(ctx)
++	if err != nil {
++		return err
++	}
++
++	certificate, err := parseAppleRoot(data)
++	if err != nil {
++		return err
+ 	}
+ 	if !validAppleRoot(certificate, time.Now()) {
+ 		return errors.New("downloaded Apple root is invalid")

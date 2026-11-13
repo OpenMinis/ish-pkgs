@@ -67,6 +67,16 @@ in which case `raw.githubusercontent.com` returns 404).
   - iOS privacy masks all network interface MAC addresses to `02:00:00:00:00:00`. Our build includes a fallback and supports `IPATOOL_MAC_ADDRESS` environment variable override.
   - Non-interactive mode uses a local FileBackend keyring. Supports `IPATOOL_KEYCHAIN_PASSPHRASE` environment variable (defaults to `minis` if unset).
   - Dynamically linked against musl libc so Unicorn's JIT engine can be loaded via `dlopen`. Requires Minis build with 64-bit ADRP fix in Asbestos for SAP handshake to succeed.
+  - `gsa.apple.com` chains to **Apple Root CA**, which the tool fetches from
+    `www.apple.com/appleca/AppleIncRootCertificate.cer` when the TLS handshake fails. That host returns **HTTP 403**
+    on some networks (e.g. mainland China), so the build also accepts
+    `IPATOOL_APPLE_ROOT_CERT=/path/AppleIncRootCertificate.cer` (DER or PEM) or `IPATOOL_APPLE_ROOT_URL=<mirror>`,
+    and the root can simply be installed into the system trust store instead
+    (`/usr/local/share/ca-certificates/` + `update-ca-certificates`, or in iSH `/etc/ssl/certs`).
+    Any copy of the certificate is fine as long as its subject is `CN=Apple Root CA` and its
+    SHA-1 fingerprint is `61:1E:5B:66:2C:59:3A:08:FF:58:D1:4A:E2:24:52:D1:98:DF:6C:60`.
+  - 2.7.0 can no longer sign in: Apple retired the endpoint it uses
+    (`HTTP 301` with no `Location`, or `HTTP 204` with an empty body). 2.8.1 works with the same account.
 - `swift`:
   - The apk is a ~150 KB launcher. The toolchain (~173 MB, 708 MB unpacked) is too big for a file in this git
     repository, so it lives in the GitHub Release `v6.4.2`. The first `swift`/`swiftc` run downloads it, checks the
@@ -98,7 +108,7 @@ tools/publish.sh dist/idevice-tools-ish-arm64-v0.1.68.zip v0.1.68    # apk packa
 | package | version | upstream | commit | modifications |
 |---|---|---|---|---|
 | `pair-host`, `idevice-tools` | `0.1.68-r0` | `v0.1.68` | `d32c8189` | none |
-| `ipatool` | `2.7.0-r1` | `v2.7.0` | `4484b55d` | 3 patches (MAC fallback, keychain passphrase env, auth info storefront) |
+| `ipatool` | `2.8.1-r1` | `v2.8.1` | `3e84853e` | 4 patches (MAC fallback, keychain passphrase env, auth info storefront, Apple root cert override) |
 | `swift` | `6.4.2-r1` | `swift-6.4.2-RELEASE` | `83eb1244` | 12 patches in 7 repositories (static musl host, iSH runtime fallbacks, macros plugin, swift-testing, SwiftPM) |
 
 Version scheme: `<upstream version>-r<N>`. `N` increases when we rebuild or patch without an upstream change.

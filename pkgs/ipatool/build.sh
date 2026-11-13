@@ -20,6 +20,12 @@ NAME="ipatool-ish-arm64"
 WORK="${WORK:-${TMPDIR:-/tmp}/ish-pkgs-ipatool-build}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "缺少 $1: $2" >&2; exit 1; }; }
+
+# macOS 只有 shasum,Linux/BusyBox 只有 sha256sum;两种都支持
+hash256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
 need go    "安装 Go (>=1.23): brew install go"
 need zig   "安装 zig: brew install zig"
 need git   "安装 git"
@@ -47,6 +53,8 @@ else
 fi
 
 echo "== 3/5 交叉编译 (Go + zig cc -dynamic)"
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"   # go build 在子 shell 里跑,相对路径会解析错
 STAGE="$OUT/$NAME-$TAG"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
 
@@ -56,6 +64,9 @@ export CC="zig cc -target $ZIG_TARGET"
 export CXX="zig c++ -target $ZIG_TARGET"
 export GOOS=linux
 export GOARCH=arm64
+# zig 会把缓存目录写进 cgo 产物的 DWARF;默认在 $HOME 下,会让构建机路径/用户名泄漏到产物里
+export ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-$WORK/zig-cache}"
+export ZIG_LOCAL_CACHE_DIR="${ZIG_LOCAL_CACHE_DIR:-$WORK/zig-cache/local}"
 
 (
   cd "$WORK/src"
@@ -71,9 +82,10 @@ echo "$info" | grep -q 'dynamically linked' || { echo "不是动态链接 musl: 
 
 # 验证: 构建机路径/用户名不能出现在产物里
 for f in "$STAGE"/*; do
-  if strings -a "$f" | grep -qF -e "$HOME" -e "/Users/$(id -un)" -e "/private/var/folders"; then
+  leaks="$(strings -a "$f" | grep -F -e "$HOME/" -e "/Users/$(id -un)/" -e "/private/var/folders/" | head -3)"
+  if [ -n "$leaks" ]; then
     echo "产物里仍含构建机路径: $f" >&2
-    strings -a "$f" | grep -F -e "$HOME" -e "/Users/$(id -un)" -e "/private/var/folders" | head -3 >&2
+    echo "$leaks" >&2
     exit 1
   fi
 done
@@ -95,18 +107,18 @@ echo "== 5/5 写来源声明并打包"
   else
     echo "modifications: ${#PATCHES[@]} patch(es) applied on top of the upstream tag:"
     for p in "${PATCHES[@]}"; do
-      echo "  - $(basename "$p")  sha256=$(shasum -a 256 "$p" | cut -d' ' -f1)"
+      echo "  - $(basename "$p")  sha256=$(hash256 "$p")"
     done
     echo "These binaries DIFFER from the official upstream release. Do not report issues to upstream."
   fi
   echo
   echo "files (sha256):"
-  ( cd "$STAGE" && for f in *; do [ "$f" = PROVENANCE.txt ] && continue; echo "  $(shasum -a 256 "$f" | cut -d' ' -f1)  $f"; done )
+  ( cd "$STAGE" && for f in *; do [ "$f" = PROVENANCE.txt ] && continue; echo "  $(hash256 "$f")  $f"; done )
 } > "$STAGE/PROVENANCE.txt"
 
 rm -f "$OUT/$NAME-$TAG.zip"
 ( cd "$STAGE" && zip -q -r "$OUT/$NAME-$TAG.zip" . )
-( cd "$OUT" && shasum -a 256 "$NAME-$TAG.zip" > SHA256SUMS )
+( cd "$OUT" && hash256 "$NAME-$TAG.zip" > SHA256SUMS )
 
 echo
 echo "完成:"
