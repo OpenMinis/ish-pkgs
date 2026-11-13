@@ -1,0 +1,49 @@
+#!/bin/sh
+# swift: front end for SwiftPM and a compile-and-run convenience mode.
+#   swift build|run|test|package|sdk ...   SwiftPM
+#   swift [swiftc-options] file.swift [program-args...]
+#       NOT an interpreter: compiles the file to a cached executable and runs it.
+#       The binary is reused until the source (or the options) change.
+#       Cache dir: $SWIFT_SCRIPT_CACHE (default: ${TMPDIR:-/tmp}/swift-script-cache-<uid>)
+SELF=$(readlink -f "$0" 2>/dev/null) || SELF=$0
+[ -n "$SELF" ] || SELF=$0
+B=$(cd "$(dirname "$SELF")" && pwd)
+ROOT=$(cd "$B/.." && pwd)
+usage() {
+  cat <<U
+usage: swift build|run|test|package|sdk [options]      (Swift Package Manager)
+       swift [swiftc-options] file.swift [args...]    (compile to a cached binary, then run it)
+       swift -version
+There is no REPL and no interpreter in this toolchain.
+U
+}
+case "$1" in
+  build|run|test|package|sdk)
+    sub=$1; shift
+    [ -x "$B/swift-$sub" ] || { echo "swift: 'swift $sub' is not included in this toolchain" >&2; exit 1; }
+    exec "$B/swift-$sub" "$@" ;;
+  -version|--version) exec "$B/swiftc" -version ;;
+  ""|-h|-help|--help|help) usage; exit 0 ;;
+  repl) echo "swift: the REPL is not available in this toolchain" >&2; exit 1 ;;
+esac
+q() { printf "'%s' " "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+FLAGS=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    *.swift) break ;;
+    -*) FLAGS="$FLAGS$(q "$1")"; shift ;;
+    *) echo "swift: unknown subcommand or not a .swift file: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+[ $# -gt 0 ] || { usage >&2; exit 1; }
+SRC=$1; shift
+[ -f "$SRC" ] || { echo "swift: no such file: $SRC" >&2; exit 1; }
+CACHE=${SWIFT_SCRIPT_CACHE:-${TMPDIR:-/tmp}/swift-script-cache-$(id -u)}
+mkdir -p "$CACHE" || exit 1
+KEY=$( { printf '%s\n' "$FLAGS" "${SWIFTC_ICU:-}" "${SWIFTC_DRIVER:-}" "${SWIFTC_STACK_SIZE-}" "${SWIFTC_KEEP_SYMBOLS:-}"; cat "$SRC"; } | cksum | tr ' ' '-')
+BIN="$CACHE/$(basename "$SRC" .swift)-$KEY"
+if [ ! -x "$BIN" ]; then
+  eval "\"\$B/swiftc\" $FLAGS \"\$SRC\" -o \"\$BIN.tmp.\$\$\"" || { rm -f "$BIN.tmp.$$"; exit 1; }
+  mv -f "$BIN.tmp.$$" "$BIN"
+fi
+exec "$BIN" "$@"

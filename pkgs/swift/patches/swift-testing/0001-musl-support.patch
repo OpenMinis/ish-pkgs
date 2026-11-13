@@ -1,0 +1,90 @@
+Build swift-testing for musl.
+
+What: RLIMIT_CORE is a plain Int32 on musl; pthread_t is an optional pointer;
+siginfo_t.si_pid / si_status get plainly named C accessors because the
+swift_name-based ones cannot be mapped by the importer on musl; musl has no
+backtrace(), so Backtrace.current() returns no addresses there.
+Why: the official Static Linux SDK ships no Testing library, so it is built
+here. Not related to iSH.
+Upstream: acceptable (upstream wants static-Linux support).
+
+Apply inside the `swift-testing` repository: git apply <this file>
+---
+diff --git a/Sources/_TestingInternals/include/Stubs.h b/Sources/_TestingInternals/include/Stubs.h
+--- a/Sources/_TestingInternals/include/Stubs.h
++++ b/Sources/_TestingInternals/include/Stubs.h
+@@ -182,6 +182,17 @@
+ }
+ #endif
+ 
++#if defined(__linux__) && !defined(__GLIBC__) && !defined(__ANDROID__)
++/// musl: the swift_name-based `siginfo_t.si_pid`/`si_status` accessors below
++/// cannot be mapped by the importer, so provide plainly named equivalents.
++static pid_t swt_musl_siginfo_t_si_pid(const siginfo_t *siginfo) {
++  return siginfo->si_pid;
++}
++static int swt_musl_siginfo_t_si_status(const siginfo_t *siginfo) {
++  return siginfo->si_status;
++}
++#endif
++
+ #if !defined(__ANDROID__)
+ #if __has_include(<signal.h>) && defined(si_pid)
+ /// Get the value of the `si_pid` field of a `siginfo_t` structure.
+diff --git a/Sources/Testing/ExitTests/ExitTest.swift b/Sources/Testing/ExitTests/ExitTest.swift
+--- a/Sources/Testing/ExitTests/ExitTest.swift
++++ b/Sources/Testing/ExitTests/ExitTest.swift
+@@ -232,7 +232,11 @@
+     // a pipe instead of a regular file; that gets us our performance back.
+     // SEE: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/fs/coredump.c#n610
+     var rl = rlimit(rlim_cur: 1, rlim_max: 1)
++#if canImport(Musl)
++    _ = setrlimit(RLIMIT_CORE, &rl)
++#else
+     _ = setrlimit(CInt(RLIMIT_CORE.rawValue), &rl)
++#endif
+ #elseif os(FreeBSD) || os(OpenBSD)
+     // As with Linux, disable the generation core files. The BSDs do not, as far
+     // as I can tell, special-case RLIMIT_CORE=1.
+diff --git a/Sources/Testing/ExitTests/WaitFor.swift b/Sources/Testing/ExitTests/WaitFor.swift
+--- a/Sources/Testing/ExitTests/WaitFor.swift
++++ b/Sources/Testing/ExitTests/WaitFor.swift
+@@ -12,6 +12,17 @@
+ internal import _TestingInternals
+ 
+ #if SWT_TARGET_OS_APPLE || os(Linux) || os(FreeBSD) || os(OpenBSD)
++#if canImport(Musl)
++extension siginfo_t {
++  fileprivate var si_pid: pid_t {
++    withUnsafePointer(to: self) { swt_musl_siginfo_t_si_pid($0) }
++  }
++  fileprivate var si_status: CInt {
++    withUnsafePointer(to: self) { swt_musl_siginfo_t_si_status($0) }
++  }
++}
++#endif
++
+ /// Block the calling thread, wait for the target process to exit, and return
+ /// a value describing the conditions under which it exited.
+ ///
+@@ -178,7 +189,7 @@
+ 
+   // Create the thread. It will run immediately; because it runs in an infinite
+   // loop, we aren't worried about detaching or joining it.
+-#if SWT_TARGET_OS_APPLE || os(FreeBSD) || os(OpenBSD)
++#if SWT_TARGET_OS_APPLE || os(FreeBSD) || os(OpenBSD) || canImport(Musl)
+   var thread: pthread_t?
+ #else
+   var thread = pthread_t()
+diff --git a/Sources/Testing/SourceAttribution/Backtrace.swift b/Sources/Testing/SourceAttribution/Backtrace.swift
+--- a/Sources/Testing/SourceAttribution/Backtrace.swift
++++ b/Sources/Testing/SourceAttribution/Backtrace.swift
+@@ -71,6 +71,8 @@
+           .init(clamping: backtrace(addresses.baseAddress!, .init(clamping: addresses.count)))
+         }
+       }
++#elseif canImport(Musl)
++      // musl has no backtrace(); backtraces are unavailable.
+ #elseif os(Linux) || os(FreeBSD) || os(OpenBSD)
+       initializedCount = .init(clamping: backtrace(addresses.baseAddress!, .init(clamping: addresses.count)))
+ #elseif os(Windows)

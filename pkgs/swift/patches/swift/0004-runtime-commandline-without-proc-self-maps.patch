@@ -1,0 +1,50 @@
+Runtime: CommandLine.arguments without /proc/self/maps (musl).
+
+What: the musl argv grabber locates the main thread's stack via /proc/self/maps
+and walks back from `environ`. When the stack bounds are unknown it now walks
+down from environ[-1] == NULL, counting slots until the slot value equals the
+count (argc), i.e. it relies on the initial stack layout only.
+Why: without a readable /proc/self/maps CommandLine.arguments was empty and
+programs indexing arguments[0] (swift-driver among them) trapped.
+Upstream: plausible; the fallback is only reached where the result used to be
+an empty array.
+
+Apply inside the `swift` repository: git apply <this file>
+---
+diff --git a/stdlib/public/CommandLineSupport/CommandLine.cpp b/stdlib/public/CommandLineSupport/CommandLine.cpp
+--- a/stdlib/public/CommandLineSupport/CommandLine.cpp
++++ b/stdlib/public/CommandLineSupport/CommandLine.cpp
+@@ -322,7 +322,32 @@
+ // Find argv by walking backwards from environ
+ void ArgvGrabber::findArgv(ArgvGrabber::stack stack) {
+   if (!stack.base) {
+-    ARGVDEBUG("no stack\n");
++    // /proc/self/maps could not be read (no procfs, sandboxes, emulators), so
++    // the stack bounds are unknown.  Rely on the initial process stack layout
++    // instead:
++    //
++    //     argc, argv[0] ... argv[argc - 1], NULL, envp[0] ...
++    //
++    // Walk down from the NULL that terminates argv, counting entries, until
++    // the slot whose value equals the number of entries seen: that is argc.
++    // Every entry before it must look like a pointer into the string area
++    // above envp, otherwise `environ` no longer points at the initial stack
++    // and we give up rather than read arbitrary memory.
++    ARGVDEBUG("no stack; using the initial stack layout\n");
++    char **initialEnvp = environ;
++    if (!initialEnvp || initialEnvp[-1] != nullptr)
++      return;
++
++    char **slot = initialEnvp - 2;
++    for (intptr_t count = 0; count < (1 << 20); ++count, --slot) {
++      if ((intptr_t)*slot == count) {
++        argc = (int)count;
++        argv = slot + 1;
++        return;
++      }
++      if ((void *)*slot <= (void *)initialEnvp)
++        return;
++    }
+     return;
+   }
+ 

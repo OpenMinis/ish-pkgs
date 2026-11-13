@@ -1,0 +1,23 @@
+#!/bin/sh
+# Print the configuration of this Swift toolchain.
+SELF=$(readlink -f "$0" 2>/dev/null) || SELF=$0
+[ -n "$SELF" ] || SELF=$0
+B=$(cd "$(dirname "$SELF")" && pwd)
+ROOT=$(cd "$B/.." && pwd)
+has() { [ -e "$1" ] && echo yes || echo no; }
+echo "toolchain root : $ROOT"
+echo "package build  : $(cat "$ROOT/share/swift/BUILD_INFO" 2>/dev/null || echo unknown)"
+"$B/swift-frontend" -version 2>/dev/null | sed 's/^/compiler       : /' | head -2
+echo "sdk / sysroot  : $ROOT  (musl headers in include/, static libraries in lib/)"
+echo "resource dir   : $ROOT/lib/swift_static"
+echo "driver         : $([ "$SWIFTC_DRIVER" = new ] && echo 'swift-driver (SWIFTC_DRIVER=new)' || echo 'legacy C++ driver (default; SWIFTC_DRIVER=new for swift-driver)')"
+echo "default flags  : -sdk <root> -resource-dir <root>/lib/swift_static -static-executable -use-ld=lld -load-plugin-executable <macros>"
+echo "link defaults  : $([ -n "$SWIFTC_KEEP_SYMBOLS" ] && echo 'symbols kept (SWIFTC_KEEP_SYMBOLS set)' || echo '-Xlinker --gc-sections -Xlinker -s unless -g is given (SWIFTC_KEEP_SYMBOLS=1 to disable)')"
+echo "thread stacks  : ${SWIFTC_STACK_SIZE-8388608} bytes for non-main threads (SWIFTC_STACK_SIZE=0 keeps musl's 128 KB)"
+echo "ICU data       : ${SWIFTC_ICU:-full}  (SWIFTC_ICU=full|small|tiny)"
+echo "macro plugin   : $(has "$B/swift-builtin-macros")  (SwiftMacros, ObservationMacros, FoundationMacros, TestingMacros)"
+echo "swift-testing  : $(has "$ROOT/lib/swift_static/linux-static/libTesting.a")"
+echo "SwiftPM        : $(has "$B/swift-package-manager")  (swift build/run/test/package)"
+echo "clang / lld    : $("$B/clang" --version 2>/dev/null | head -1)"
+echo "tools          : $(cd "$B" && ls | tr '\n' ' ')"
+echo "environment    : SWIFTC_DRIVER=${SWIFTC_DRIVER:-} SWIFTC_KEEP_SYMBOLS=${SWIFTC_KEEP_SYMBOLS:-} SWIFTC_ICU=${SWIFTC_ICU:-} SWIFTC_STACK_SIZE=${SWIFTC_STACK_SIZE-} SWIFT_SCRIPT_CACHE=${SWIFT_SCRIPT_CACHE:-}"

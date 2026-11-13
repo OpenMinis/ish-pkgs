@@ -13,13 +13,14 @@ KEYNAME=ish-pkgs
 ARCH=aarch64
 
 case "$ZIP" in
+  *swift*)   PKG_DIR="$REPO/pkgs/swift" ;;
   *ipatool*) PKG_DIR="$REPO/pkgs/ipatool" ;;
   *)         PKG_DIR="$REPO/pkgs/idevice-tools" ;;
 esac
 
 # apk 版本约定: <上游版本>-r<修订>。
 # r0 = 纯上游源码原样编译(patches/ 为空);有补丁则 >= r1。我们改了补丁或重编时递增。
-NPATCH=$(ls "$PKG_DIR/patches/"*.patch 2>/dev/null | wc -l | tr -d " ")
+NPATCH=$(find "$PKG_DIR/patches" -name '*.patch' 2>/dev/null | wc -l | tr -d " ")
 if [ "${NPATCH:-0}" -gt 0 ]; then REV=1; else REV=0; fi
 VER="${TAG#v}-r${REV}"
 
@@ -50,6 +51,27 @@ mk() {  # mk <包名> <描述> <依赖(逗号分隔,可空)> <文件...>
 
 echo "== 打包 ($TAG, $MOD)"
 case "$ZIP" in
+  *swift*)
+    root="$T/root-swift"
+    mkdir -p "$root/usr/local/bin" "$root/usr/local/share/swift/bin" "$root/usr/share/doc/swift"
+    install -m755 "$PKG_DIR/files/swift-launcher" "$root/usr/local/share/swift/bin/swift-launcher"
+    # 创建所有命令软链到 launcher
+    for cmd in swift swiftc swift-build swift-package swift-run swift-test swiftc-info; do
+      ln -s "../share/swift/bin/swift-launcher" "$root/usr/local/bin/$cmd"
+    done
+    cp "$PROV" "$root/usr/share/doc/swift/PROVENANCE.txt"
+    if [ -f "$PKG_DIR/LICENSE.upstream" ]; then
+      cp "$PKG_DIR/LICENSE.upstream" "$root/usr/share/doc/swift/LICENSE"
+    fi
+    if [ -f "$PKG_DIR/README.md" ]; then
+      cp "$PKG_DIR/README.md" "$root/usr/share/doc/swift/README.md"
+    fi
+    rm -f "$OUT/swift-"[0-9]*.apk
+    python3 "$HERE/mkapk.py" "$root" "swift" "$VER" "$ARCH" \
+      "Swift $TAG toolchain launcher for iSH arm64 (auto-fetches static toolchain on first run)" \
+      "Apache-2.0 WITH LLVM-exception" "$OUT/swift-$VER.apk" "zstd,tar,curl" >/dev/null
+    echo "  swift-$VER.apk ($(wc -c < "$OUT/swift-$VER.apk") 字节)"
+    ;;
   *ipatool*)
     mk ipatool "Command-line tool to search and download App Store IPAs (adapted for iSH arm64)" "" ipatool
     ;;

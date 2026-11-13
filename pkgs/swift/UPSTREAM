@@ -1,0 +1,4 @@
+name=swift
+url=https://github.com/swiftlang/swift
+license=Apache-2.0 WITH LLVM-exception
+tag=swift-6.4.2-RELEASE

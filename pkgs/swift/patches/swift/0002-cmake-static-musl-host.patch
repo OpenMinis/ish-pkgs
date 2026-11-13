@@ -1,0 +1,219 @@
+CMake: build the compiler itself for a fully static musl host.
+
+What: accept LINUX_STATIC as host SDK and introduce SWIFT_HOST_IS_STATIC; link
+host tools with -static and -lfts against lib/swift_static/linux-static, listing
+the static Swift runtime libraries explicitly (clang++ does the final link, so
+Swift autolink entries are not processed); build the swift-syntax libraries
+statically; drop the dlopen()-based macro plugins from swift-frontend's
+dependencies; run the just-built static helper tools during the build; take the
+SwiftShims module from the host SDK.
+Why: there is no official musl-hosted compiler. All changes are conditional on
+the static host, other platforms are unaffected. Not related to iSH.
+Upstream: possible in principle (a static Linux host is a reasonable target),
+but it would need the build-script side done properly first.
+
+Apply inside the `swift` repository: git apply <this file>
+---
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1212,7 +1212,8 @@
+ # We could easily do that - we have all of that information in build-script-impl.
+ # Darwin targets cheat and use `xcrun`.
+ 
+-if("${SWIFT_HOST_VARIANT_SDK}" STREQUAL "LINUX")
++# LINUX_STATIC: fully static musl host (aarch64/x86_64-swift-linux-musl).
++if("${SWIFT_HOST_VARIANT_SDK}" MATCHES "^LINUX(_STATIC)?$")
+ 
+   set(SWIFT_HOST_VARIANT "linux" CACHE STRING
+       "Deployment OS for Swift host tools (the compiler) [linux].")
+@@ -1436,6 +1437,13 @@
+ endif()
+ 
+ swift_get_host_triple(SWIFT_HOST_TRIPLE)
++
++# A fully static host (musl) cannot build or load shared libraries: all host
++# libraries become static archives and dlopen-based plugins are unavailable.
++set(SWIFT_HOST_IS_STATIC FALSE)
++if(SWIFT_SDK_${SWIFT_HOST_VARIANT_SDK}_STATIC_ONLY)
++  set(SWIFT_HOST_IS_STATIC TRUE)
++endif()
+ set(SWIFT_HOST_MODULE_TRIPLE "${SWIFT_SDK_${SWIFT_HOST_VARIANT_SDK}_ARCH_${SWIFT_HOST_VARIANT_ARCH}_MODULE}")
+ set(SWIFT_HOST_LIBRARIES_DEST_DIR "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/swift/host")
+ 
+diff --git a/cmake/modules/AddSwift.cmake b/cmake/modules/AddSwift.cmake
+--- a/cmake/modules/AddSwift.cmake
++++ b/cmake/modules/AddSwift.cmake
+@@ -324,7 +324,7 @@
+ 
+   if((SWIFT_HOST_VARIANT_ARCH STREQUAL "armv7" OR
+       SWIFT_HOST_VARIANT_ARCH STREQUAL "aarch64") AND
+-     (SWIFT_HOST_VARIANT_SDK STREQUAL "LINUX" OR
++     (SWIFT_HOST_VARIANT_SDK MATCHES "^LINUX" OR
+       SWIFT_HOST_VARIANT_SDK STREQUAL "ANDROID"))
+     target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-funwind-tables>)
+   endif()
+@@ -353,7 +353,13 @@
+ function(_add_host_variant_link_flags target)
+   _add_host_variant_c_compile_link_flags(${target})
+ 
+-  if(SWIFT_HOST_VARIANT_SDK STREQUAL "LINUX")
++  if(SWIFT_HOST_VARIANT_SDK STREQUAL "LINUX_STATIC")
++    target_link_options(${target} PRIVATE -static)
++    target_link_libraries(${target} PRIVATE
++      pthread
++      dl
++      fts)
++  elseif(SWIFT_HOST_VARIANT_SDK STREQUAL "LINUX")
+     target_link_libraries(${target} PRIVATE
+       pthread
+       dl)
+@@ -586,6 +592,9 @@
+ 
+         endif()
+         set(host_lib_dir "${swift_dir}/lib/swift/${SWIFT_SDK_${SWIFT_HOST_VARIANT_SDK}_LIB_SUBDIR}")
++        if(SWIFT_HOST_IS_STATIC)
++          set(host_lib_dir "${swift_dir}/lib/swift_static/${SWIFT_SDK_${SWIFT_HOST_VARIANT_SDK}_LIB_SUBDIR}")
++        endif()
+       else()
+         set(host_lib_dir "${SWIFTLIB_DIR}/${SWIFT_SDK_${SWIFT_HOST_VARIANT_SDK}_LIB_SUBDIR}")
+       endif()
+@@ -593,6 +602,17 @@
+ 
+       set(swiftrt "${host_lib_arch_dir}/swiftrt${CMAKE_C_OUTPUT_EXTENSION}")
+       target_link_libraries(${target} PRIVATE ${swiftrt})
++      if(SWIFT_HOST_IS_STATIC)
++        # Static stdlib: clang++ does the link, so the autolink entries in the
++        # Swift objects are not honoured; name the runtime archives explicitly.
++        target_link_libraries(${target} PRIVATE
++          -Wl,--start-group
++          swift_StringProcessing swift_RegexParser swift_Concurrency
++          swiftSynchronization swiftSwiftOnoneSupport swift_Builtin_float
++          swiftMusl swiftCore
++          -Wl,--end-group
++          dispatch BlocksRuntime c++ c++abi unwind m pthread dl)
++      endif()
+       target_link_libraries(${target} PRIVATE "swiftCore")
+ 
+       target_link_directories(${target} PRIVATE ${host_lib_dir})
+diff --git a/lib/CompilerSwiftSyntax/CMakeLists.txt b/lib/CompilerSwiftSyntax/CMakeLists.txt
+--- a/lib/CompilerSwiftSyntax/CMakeLists.txt
++++ b/lib/CompilerSwiftSyntax/CMakeLists.txt
+@@ -14,6 +14,9 @@
+   set(CMAKE_CXX_COMPILER_TARGET ${SWIFT_HOST_TRIPLE})
+   set(CMAKE_Swift_COMPILER_TARGET ${SWIFT_HOST_TRIPLE})
+   set(BUILD_SHARED_LIBS ON)
++  if(SWIFT_HOST_IS_STATIC)
++    set(BUILD_SHARED_LIBS OFF)
++  endif()
+   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${SWIFT_HOST_LIBRARIES_DEST_DIR}/compiler")
+   set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${SWIFT_HOST_LIBRARIES_DEST_DIR}/compiler")
+   if(SWIFT_HOST_VARIANT_SDK MATCHES "LINUX|ANDROID|OPENBSD|FREEBSD")
+diff --git a/lib/SwiftSyntax/CMakeLists.txt b/lib/SwiftSyntax/CMakeLists.txt
+--- a/lib/SwiftSyntax/CMakeLists.txt
++++ b/lib/SwiftSyntax/CMakeLists.txt
+@@ -13,6 +13,9 @@
+ set(CMAKE_CXX_COMPILER_TARGET ${SWIFT_HOST_TRIPLE})
+ set(CMAKE_Swift_COMPILER_TARGET ${SWIFT_HOST_TRIPLE})
+ set(BUILD_SHARED_LIBS ON)
++if(SWIFT_HOST_IS_STATIC)
++  set(BUILD_SHARED_LIBS OFF)
++endif()
+ # All libraries in 'swift-syntax' goes to 'lib/swift/host'.
+ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${SWIFT_HOST_LIBRARIES_DEST_DIR}")
+ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${SWIFT_HOST_LIBRARIES_DEST_DIR}")
+diff --git a/tools/driver/CMakeLists.txt b/tools/driver/CMakeLists.txt
+--- a/tools/driver/CMakeLists.txt
++++ b/tools/driver/CMakeLists.txt
+@@ -8,11 +8,15 @@
+     target_link_libraries(${target}
+                           PRIVATE swiftCore)
+ 
+-    get_property(SWIFT_MACRO_PLUGINS GLOBAL PROPERTY SWIFT_MACRO_PLUGINS)
+-    foreach(macrolib ${SWIFT_MACRO_PLUGINS})
+-      add_dependencies(${target} ${macrolib})
+-    endforeach()
+-    add_dependencies(${target} SwiftInProcPluginServer)
++    # A static host cannot dlopen() macro plugins or the in-process plugin
++    # server, so there is nothing to build for them.
++    if(NOT SWIFT_HOST_IS_STATIC)
++      get_property(SWIFT_MACRO_PLUGINS GLOBAL PROPERTY SWIFT_MACRO_PLUGINS)
++      foreach(macrolib ${SWIFT_MACRO_PLUGINS})
++        add_dependencies(${target} ${macrolib})
++      endforeach()
++      add_dependencies(${target} SwiftInProcPluginServer)
++    endif()
+   endif()
+ endfunction()
+ 
+diff --git a/tools/swift-compatibility-symbols/CMakeLists.txt b/tools/swift-compatibility-symbols/CMakeLists.txt
+--- a/tools/swift-compatibility-symbols/CMakeLists.txt
++++ b/tools/swift-compatibility-symbols/CMakeLists.txt
+@@ -8,9 +8,17 @@
+ if(SWIFT_NATIVE_SWIFT_TOOLS_PATH)
+   set(syms_file "${CMAKE_BINARY_DIR}/share/swift/compatibility-symbols")
+ 
++  # Prebuilt toolchains do not ship this helper. A statically linked host tool
++  # can be run on the build machine when the architectures match, so fall back
++  # to the one we just built.
++  set(compat_symbols_tool "${SWIFT_NATIVE_SWIFT_TOOLS_PATH}/swift-compatibility-symbols")
++  if(NOT EXISTS "${compat_symbols_tool}" AND SWIFT_HOST_IS_STATIC)
++    set(compat_symbols_tool "$<TARGET_FILE:swift-compatibility-symbols>")
++  endif()
++
+   add_custom_command_target(copy_compat_target
+     COMMAND
+-      "${SWIFT_NATIVE_SWIFT_TOOLS_PATH}/swift-compatibility-symbols"
++      "${compat_symbols_tool}"
+       --output-filename ${syms_file}
+     OUTPUT
+       ${syms_file}
+diff --git a/localization/CMakeLists.txt b/localization/CMakeLists.txt
+--- a/localization/CMakeLists.txt
++++ b/localization/CMakeLists.txt
+@@ -1,15 +1,29 @@
+ set(diagnostic_witness "${CMAKE_BINARY_DIR}/share/swift/diagnostics/generated")
+ 
++# Prebuilt toolchains do not ship these helpers. Statically linked host tools
++# can be run on the build machine when the architectures match, so fall back to
++# the ones we just built.
++set(def_to_strings_tool "${SWIFT_NATIVE_SWIFT_TOOLS_PATH}/swift-def-to-strings-converter")
++set(serialize_diagnostics_tool "${SWIFT_NATIVE_SWIFT_TOOLS_PATH}/swift-serialize-diagnostics")
++if(SWIFT_HOST_IS_STATIC)
++  if(NOT EXISTS "${def_to_strings_tool}")
++    set(def_to_strings_tool "$<TARGET_FILE:swift-def-to-strings-converter>")
++  endif()
++  if(NOT EXISTS "${serialize_diagnostics_tool}")
++    set(serialize_diagnostics_tool "$<TARGET_FILE:swift-serialize-diagnostics>")
++  endif()
++endif()
++
+ add_custom_command(
+   OUTPUT
+     ${diagnostic_witness}
+   COMMAND
+     ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/diagnostics/ ${CMAKE_BINARY_DIR}/share/swift/diagnostics/
+   COMMAND
+-    "${SWIFT_NATIVE_SWIFT_TOOLS_PATH}/swift-def-to-strings-converter"
++    "${def_to_strings_tool}"
+       --output-directory ${CMAKE_BINARY_DIR}/share/swift/diagnostics/
+   COMMAND
+-    "${SWIFT_NATIVE_SWIFT_TOOLS_PATH}/swift-serialize-diagnostics"
++    "${serialize_diagnostics_tool}"
+       --input-file-path ${CMAKE_BINARY_DIR}/share/swift/diagnostics/en.strings
+       --output-directory ${CMAKE_BINARY_DIR}/share/swift/diagnostics/
+   COMMAND
+diff --git a/SwiftCompilerSources/CMakeLists.txt b/SwiftCompilerSources/CMakeLists.txt
+--- a/SwiftCompilerSources/CMakeLists.txt
++++ b/SwiftCompilerSources/CMakeLists.txt
+@@ -224,6 +224,10 @@
+     string(STRIP "${swiftly_dir}" swiftly_dir)
+ 
+     list(APPEND sdk_option "-I" "${swiftly_dir}/usr/lib" "-I" "${swiftly_dir}/usr/lib")
++  elseif(SWIFT_HOST_IS_STATIC AND SWIFT_PATH_TO_SWIFT_SDK)
++    # Cross-compiling for a static host: the shims must come from the host SDK,
++    # not from the builder toolchain (which would redefine the SwiftShims module).
++    list(APPEND sdk_option "-I" "${SWIFT_PATH_TO_SWIFT_SDK}/usr/lib")
+   else()
+     list(APPEND sdk_option "-I" "${swift_exec_bin_dir}/../lib" "-I" "${sdk_path}/usr/lib")
+   endif()

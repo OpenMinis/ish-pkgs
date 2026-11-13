@@ -1,0 +1,42 @@
+Build fixes for a static (non-PIC) musl host.
+
+What: libIndexStore is built STATIC when LLVM_ENABLE_PIC is OFF (it was
+hard-coded SHARED); cc1depscan uses __builtin_alloca (musl's alloca macro is not
+active in that translation unit).
+Why: no shared object can be linked for the static musl target. Not related to iSH.
+Upstream: both are small portability fixes for the Apple fork; acceptable.
+
+Apply inside the `llvm-project` repository: git apply <this file>
+---
+diff --git a/clang/tools/IndexStore/CMakeLists.txt b/clang/tools/IndexStore/CMakeLists.txt
+--- a/clang/tools/IndexStore/CMakeLists.txt
++++ b/clang/tools/IndexStore/CMakeLists.txt
+@@ -18,7 +18,15 @@
+   set(output_name "IndexStore")
+ endif()
+ 
+-add_clang_library(IndexStore SHARED
++# Fully static hosts (e.g. *-swift-linux-musl, LLVM_ENABLE_PIC=OFF) cannot link shared libraries.
++if(LLVM_ENABLE_PIC)
++  set(INDEXSTORE_LIBRARY_KIND SHARED)
++else()
++  set(INDEXSTORE_LIBRARY_KIND STATIC)
++  unset(LLVM_EXPORTED_SYMBOL_FILE)
++endif()
++
++add_clang_library(IndexStore ${INDEXSTORE_LIBRARY_KIND}
+   OUTPUT_NAME ${output_name}
+   ${SOURCES}
+ 
+diff --git a/clang/tools/driver/cc1depscan_main.cpp b/clang/tools/driver/cc1depscan_main.cpp
+--- a/clang/tools/driver/cc1depscan_main.cpp
++++ b/clang/tools/driver/cc1depscan_main.cpp
+@@ -135,7 +135,7 @@
+   const int kTargetStack = DesiredStackSize - 256 * 1024;
+   if (Curr < kTargetStack) {
+     volatile char *volatile Alloc =
+-        static_cast<volatile char *>(alloca(kTargetStack - Curr));
++        static_cast<volatile char *>(__builtin_alloca(kTargetStack - Curr));
+     Alloc[0] = 0;
+     Alloc[kTargetStack - Curr - 1] = 0;
+   }

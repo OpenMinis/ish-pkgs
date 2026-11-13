@@ -1,0 +1,111 @@
+Unfair lock: fall back when the kernel has no PI futexes.
+
+What: the contended path of dispatch_unfair_lock uses FUTEX_LOCK_PI /
+FUTEX_UNLOCK_PI. If the very first PI call fails with ENOSYS/EINVAL/ENOTSUP
+(and no PI call ever succeeded) PI futexes are marked unsupported and the lock
+degrades to a sched_yield() spin lock. Once a PI call has succeeded behaviour is
+unchanged (errors still crash).
+Why: on iSH contended locks killed the process with a silent SIGTRAP
+(DISPATCH_INTERNAL_CRASH), which made TaskGroup/actor programs fail 20-55% of
+the time. Reproduced elsewhere by blocking the PI futex operations with seccomp.
+Upstream: uncertain; a spin fallback is not something libdispatch wants on real
+kernels, although it is only reachable where it previously crashed.
+
+Apply inside the `swift-corelibs-libdispatch` repository: git apply <this file>
+---
+diff --git a/src/shims/lock.c b/src/shims/lock.c
+--- a/src/shims/lock.c
++++ b/src/shims/lock.c
+@@ -488,14 +488,53 @@
+ }
+ 
+ #if HAVE_FUTEX_PI
+-static void
++// Not every "Linux" implements priority-inheritance futexes (seccomp
++// sandboxes, user-mode kernels and emulators such as iSH return ENOSYS for
++// FUTEX_LOCK_PI).  Detect that on first use and degrade the unfair lock to a
++// yielding spinlock instead of crashing.  Once a PI operation has succeeded
++// the kernel is known to support them and errors are fatal as before.
++#define DISPATCH_FUTEX_PI_UNKNOWN 0
++#define DISPATCH_FUTEX_PI_SUPPORTED 1
++#define DISPATCH_FUTEX_PI_UNSUPPORTED 2
++static int _dispatch_futex_pi_state = DISPATCH_FUTEX_PI_UNKNOWN;
++
++DISPATCH_ALWAYS_INLINE
++static inline bool
++_dispatch_futex_pi_errno_means_unsupported(int err)
++{
++	if (err != ENOSYS && err != EINVAL && err != ENOTSUP) return false;
++	int state = os_atomic_load(&_dispatch_futex_pi_state, relaxed);
++	if (state == DISPATCH_FUTEX_PI_SUPPORTED) return false;
++	os_atomic_store(&_dispatch_futex_pi_state, DISPATCH_FUTEX_PI_UNSUPPORTED,
++			relaxed);
++	return true;
++}
++
++// Returns true if the lock was acquired, false if PI futexes are unavailable.
++static bool
+ _dispatch_futex_lock_pi(uint32_t *uaddr, struct timespec *timeout, int detect,
+ 	      int opflags)
+ {
+-	int err = _futex_blocking_op(uaddr, FUTEX_LOCK_PI, (uint32_t)detect,
+-			timeout, opflags);
+-	if (err == 0) return;
+-	DISPATCH_CLIENT_CRASH(err, "futex_lock_pi() failed");
++	if (unlikely(os_atomic_load(&_dispatch_futex_pi_state, relaxed) ==
++			DISPATCH_FUTEX_PI_UNSUPPORTED)) {
++		return false;
++	}
++	for (;;) {
++		int rc = _dispatch_futex(uaddr, FUTEX_LOCK_PI, (uint32_t)detect,
++				timeout, NULL, 0, opflags);
++		if (rc == 0) {
++			if (unlikely(os_atomic_load(&_dispatch_futex_pi_state, relaxed) !=
++					DISPATCH_FUTEX_PI_SUPPORTED)) {
++				os_atomic_store(&_dispatch_futex_pi_state,
++						DISPATCH_FUTEX_PI_SUPPORTED, relaxed);
++			}
++			return true;
++		}
++		int err = errno;
++		if (err == EINTR && timeout == NULL) continue;
++		if (_dispatch_futex_pi_errno_means_unsupported(err)) return false;
++		DISPATCH_CLIENT_CRASH(err, "futex_lock_pi() failed");
++	}
+ }
+ 
+ static void
+@@ -503,6 +542,11 @@
+ {
+ 	int rc = _dispatch_futex(uaddr, FUTEX_UNLOCK_PI, 0, NULL, NULL, 0, opflags);
+ 	if (rc == 0) return;
++	if (_dispatch_futex_pi_errno_means_unsupported(errno)) {
++		// Spinlock mode: there are no kernel waiters, just release the word.
++		os_atomic_store(uaddr, 0, release);
++		return;
++	}
+ 	DISPATCH_CLIENT_CRASH(errno, "futex_unlock_pi() failed");
+ }
+ #endif
+@@ -658,7 +702,20 @@
+ 		dispatch_lock_options_t flags)
+ {
+ 	(void)flags;
+-	_dispatch_futex_lock_pi(&dul->dul_lock, NULL, 1, FUTEX_PRIVATE_FLAG);
++	if (likely(_dispatch_futex_lock_pi(&dul->dul_lock, NULL, 1,
++			FUTEX_PRIVATE_FLAG))) {
++		return;
++	}
++
++	// No PI futexes: spin, yielding the CPU between attempts.
++	dispatch_lock cur, self = _dispatch_lock_value_for_self();
++	while (unlikely(!os_atomic_cmpxchgv(&dul->dul_lock,
++			DLOCK_OWNER_NULL, self, &cur, acquire))) {
++		if (unlikely(_dispatch_lock_is_locked_by(cur, self))) {
++			DISPATCH_CLIENT_CRASH(0, "trying to lock recursively");
++		}
++		sched_yield();
++	}
+ }
+ #else
+ void

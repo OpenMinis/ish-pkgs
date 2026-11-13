@@ -1,0 +1,51 @@
+Toolchain.executableDir: prefer argv[0] over Bundle.main.
+
+What: derive the driver's directory from ProcessInfo.arguments[0] (absolute,
+cwd-relative or looked up in PATH) and only then from Bundle.main.executablePath;
+the old code called fatalError when Bundle.main had no path.
+Why: Bundle.main depends on readlink("/proc/self/exe"), unreliable on iSH.
+Upstream: uncertain (argv[0] can be spoofed; upstream may prefer fixing
+Foundation instead).
+
+Apply inside the `swift-driver` repository: git apply <this file>
+---
+diff --git a/Sources/SwiftDriver/Toolchains/Toolchain.swift b/Sources/SwiftDriver/Toolchains/Toolchain.swift
+--- a/Sources/SwiftDriver/Toolchains/Toolchain.swift
++++ b/Sources/SwiftDriver/Toolchains/Toolchain.swift
+@@ -14,6 +14,10 @@
+ 
+ import SwiftOptions
+ import class Foundation.Bundle
++import class Foundation.ProcessInfo
++import var TSCBasic.localFileSystem
++import class TSCBasic.Process
++import func TSCBasic.resolveSymlinks
+ 
+ import func TSCBasic.getEnvSearchPaths
+ import func TSCBasic.lookupExecutablePath
+@@ -190,6 +194,25 @@
+       }
+       // If the path isn't given, we are running the driver as an executable,
+       // so assuming the compiler is adjacent to the driver.
++      //
++      // Prefer the process arguments over `Bundle.main`: on Linux the latter
++      // depends solely on reading `/proc/self/exe`, which is unavailable or
++      // unreliable in some environments (chroots without procfs, sandboxes,
++      // emulators such as iSH). `ProcessInfo` uses the same link when it can
++      // be read and otherwise falls back to `argv[0]`.
++      if let arg0 = ProcessInfo.processInfo.arguments.first, !arg0.isEmpty {
++        var candidate: AbsolutePath? = nil
++        if let absolute = try? AbsolutePath(validating: arg0) {
++          candidate = absolute
++        } else if arg0.contains("/"), let cwd = localFileSystem.currentWorkingDirectory {
++          candidate = try? AbsolutePath(validating: arg0, relativeTo: cwd)
++        } else {
++          candidate = Process.findExecutable(arg0)
++        }
++        if let candidate, localFileSystem.exists(candidate) {
++          return ((try? TSCBasic.resolveSymlinks(candidate)) ?? candidate).parentDirectory
++        }
++      }
+       guard let path = Bundle.main.executablePath else {
+         fatalError("Could not find executable path.")
+       }

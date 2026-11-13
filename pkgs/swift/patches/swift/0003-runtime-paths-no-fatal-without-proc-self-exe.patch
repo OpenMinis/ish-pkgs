@@ -1,0 +1,157 @@
+Runtime: do not abort when /proc/self/exe cannot be read.
+
+What: _swift_initRuntimePath (static linking: dladdr() returns nothing) retries
+readlink("/proc/self/exe"), then falls back to getauxval(AT_EXECFN) and finally
+program_invocation_name / PATH; if everything fails the runtime path is null
+instead of fatalError("Unable to obtain Swift runtime path").
+Why: on iSH readlink("/proc/self/exe") fails intermittently; every program that
+touched the concurrency runtime aborted in ~95% of runs.
+Upstream: likely acceptable (the only consumer already tolerates a null path).
+
+Apply inside the `swift` repository: git apply <this file>
+---
+diff --git a/stdlib/public/runtime/Paths.cpp b/stdlib/public/runtime/Paths.cpp
+--- a/stdlib/public/runtime/Paths.cpp
++++ b/stdlib/public/runtime/Paths.cpp
+@@ -62,7 +62,12 @@
+ #ifdef __linux__
+ // Needed for 'readlink'.
+ #include <unistd.h>
++#include <limits.h>
++#if __has_include(<sys/auxv.h>)
++#include <sys/auxv.h>
++#define SWIFT_PATHS_HAS_GETAUXVAL 1
+ #endif
++#endif
+ 
+ #include <cerrno>
+ #include <cstdlib>
+@@ -527,7 +532,100 @@
+ 
+   return nullptr;
+ }
++
++#if defined(__linux__) && SWIFT_STDLIB_HAS_DLADDR && !APPLE_OS_SYSTEM
++/// Turn a possibly relative path to an existing file into a malloc()ed
++/// absolute path, or return nullptr.
++char *
++_swift_copyAbsoluteExistingPath(const char *path) {
++  if (!path || !*path)
++    return nullptr;
+ 
++  char resolved[PATH_MAX];
++  if (::realpath(path, resolved))
++    return ::strdup(resolved);
++
++  // realpath() can itself depend on /proc (e.g. in Musl); fall back to
++  // joining with the current directory by hand.
++  if (path[0] == '/')
++    return ::access(path, F_OK) == 0 ? ::strdup(path) : nullptr;
++
++  char cwd[PATH_MAX];
++  if (!::getcwd(cwd, sizeof(cwd)))
++    return nullptr;
++
++  char *joined = _swift_joinPaths(cwd, path, nullptr);
++  if (joined && ::access(joined, F_OK) == 0)
++    return joined;
++
++  std::free(joined);
++  return nullptr;
++}
++
++/// Find the path of the running executable without dladdr(); used when
++/// statically linked.  Returns a malloc()ed string or nullptr.
++char *
++_swift_copyLinuxExecutablePath() {
++  char pathBuf[PATH_MAX];
++
++  // 1. /proc/self/exe.  Retry a few times since some environments fail this
++  //    call spuriously.
++  for (unsigned attempt = 0; attempt < 8; ++attempt) {
++    ssize_t len = ::readlink("/proc/self/exe", pathBuf, sizeof(pathBuf) - 1);
++    if (len > 0) {
++      pathBuf[len] = '\0';
++      return ::strdup(pathBuf);
++    }
++    if (len < 0 && (errno == ENOENT || errno == EACCES || errno == ENOTDIR))
++      break;
++  }
++
++#if SWIFT_PATHS_HAS_GETAUXVAL
++  // 2. The filename the kernel was asked to execute.  This may be relative
++  //    to the working directory at exec time.
++  if (const char *execFn = (const char *)::getauxval(AT_EXECFN)) {
++    if (char *result = _swift_copyAbsoluteExistingPath(execFn))
++      return result;
++  }
++#endif
++
++#if !defined(__ANDROID__)
++  // 3. argv[0], searching PATH if it has no directory component.
++  const char *argv0 = program_invocation_name;
++  if (argv0 && *argv0) {
++    if (std::strchr(argv0, '/')) {
++      if (char *result = _swift_copyAbsoluteExistingPath(argv0))
++        return result;
++    } else if (const char *searchPath = ::getenv("PATH")) {
++      const char *dir = searchPath;
++      while (*dir) {
++        const char *end = std::strchr(dir, ':');
++        size_t dirLen = end ? (size_t)(end - dir) : std::strlen(dir);
++        if (dirLen > 0 && dirLen < sizeof(pathBuf)) {
++          std::memcpy(pathBuf, dir, dirLen);
++          pathBuf[dirLen] = '\0';
++          char *candidate = _swift_joinPaths(pathBuf, argv0, nullptr);
++          if (candidate && ::access(candidate, X_OK) == 0) {
++            char *result = _swift_copyAbsoluteExistingPath(candidate);
++            std::free(candidate);
++            if (result)
++              return result;
++          } else {
++            std::free(candidate);
++          }
++        }
++        if (!end)
++          break;
++        dir = end + 1;
++      }
++    }
++  }
++#endif
++
++  return nullptr;
++}
++#endif
++
+ #if !defined(_WIN32) || defined(__CYGWIN__)
+ void
+ _swift_initRuntimePath(void *) {
+@@ -547,17 +645,18 @@
+     // If we don't find anything, try reading /proc/self/exe as a fallback;
+     // this is needed with Musl when statically linking because in that case
+     // dladdr() does nothing.
+-    char pathBuf[4096];
+-    ssize_t len = readlink("/proc/self/exe", pathBuf, sizeof(pathBuf)-1);
+-    if (len > 0 ) {
+-      pathBuf[len] = '\0';
+-      runtimePath = ::strdup(pathBuf);
+-      return;
+-    }
+-#endif
+-
++    //
++    // Neither /proc nor the fallbacks below are guaranteed to work (no procfs,
++    // sandboxes, emulators such as iSH where readlink("/proc/self/exe") fails
++    // intermittently), so failing to find the path is not fatal: the callers
++    // already cope with a null runtime path (auxiliary executables such as
++    // swift-backtrace are then simply not found).
++    runtimePath = _swift_copyLinuxExecutablePath();
++    return;
++#else
+     swift::fatalError(/* flags = */ 0,
+                       "Unable to obtain Swift runtime path\n");
++#endif
+   }
+ 
+   runtimePath = ::strdup(dli.dli_fname);

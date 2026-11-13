@@ -23,6 +23,7 @@ apk update
 apk add pair-host            # just pair_host (~0.85 MB)
 apk add idevice-tools        # the rest of idevice-tools; pulls in pair-host
 apk add ipatool              # search, purchase and download App Store IPAs (~10.9 MB)
+apk add swift                # Swift 6.4.2 compiler + SwiftPM (launcher; fetches the toolchain on first run)
 ```
 
 Verify the key you downloaded before trusting it:
@@ -50,6 +51,7 @@ in which case `raw.githubusercontent.com` returns 404).
 | `pair-host` | `pair_host`: advertise as an iOS 27 pairable host and write a pairing file | [jkcoxson/idevice](https://github.com/jkcoxson/idevice) (MIT) |
 | `idevice-tools` | `idevice-tools`, `idevice_id`, `iproxy`, `pair_apple_tv` (depends on `pair-host`) | same |
 | `ipatool` | `ipatool`: search, purchase and download App Store IPAs | [majd/ipatool](https://github.com/majd/ipatool) (MIT) |
+| `swift` | `swift`, `swiftc`, `swift-build/-package/-run/-test`: Swift 6.4.2 toolchain (static musl), see [pkgs/swift](pkgs/swift/README.md) | [swiftlang/swift](https://github.com/swiftlang/swift) (Apache-2.0 WITH LLVM-exception) |
 
 `apk del idevice-tools` also removes `pair-host` unless you installed it explicitly (`apk add pair-host`).
 
@@ -65,6 +67,12 @@ in which case `raw.githubusercontent.com` returns 404).
   - iOS privacy masks all network interface MAC addresses to `02:00:00:00:00:00`. Our build includes a fallback and supports `IPATOOL_MAC_ADDRESS` environment variable override.
   - Non-interactive mode uses a local FileBackend keyring. Supports `IPATOOL_KEYCHAIN_PASSPHRASE` environment variable (defaults to `minis` if unset).
   - Dynamically linked against musl libc so Unicorn's JIT engine can be loaded via `dlopen`. Requires Minis build with 64-bit ADRP fix in Asbestos for SAP handshake to succeed.
+- `swift`:
+  - The apk is a ~150 KB launcher. The toolchain (~173 MB, 708 MB unpacked) is too big for a file in this git
+    repository, so it lives in the GitHub Release `v6.4.2`. The first `swift`/`swiftc` run downloads it, checks the
+    SHA-256 pinned in the launcher and unpacks it into `/usr/local/swift`; afterwards the launcher just `exec`s.
+  - Programs are built as static executables. Patches make the runtime tolerate iSH's flaky `/proc/self/exe`,
+    missing PI futexes and unreadable `/proc/<tid>/stat`; see `pkgs/swift/ISH-NOTES.md`.
 
 ## How binaries are built
 
@@ -91,6 +99,7 @@ tools/publish.sh dist/idevice-tools-ish-arm64-v0.1.68.zip v0.1.68    # apk packa
 |---|---|---|---|---|
 | `pair-host`, `idevice-tools` | `0.1.68-r0` | `v0.1.68` | `d32c8189` | none |
 | `ipatool` | `2.7.0-r1` | `v2.7.0` | `4484b55d` | 3 patches (MAC fallback, keychain passphrase env, auth info storefront) |
+| `swift` | `6.4.2-r1` | `swift-6.4.2-RELEASE` | `83eb1244` | 12 patches in 7 repositories (static musl host, iSH runtime fallbacks, macros plugin, swift-testing, SwiftPM) |
 
 Version scheme: `<upstream version>-r<N>`. `N` increases when we rebuild or patch without an upstream change.
 
@@ -116,6 +125,7 @@ pkgs/<name>/patches/              our patches, if any (none yet)
 pkgs/<name>/LICENSE.upstream      upstream license, kept as required
 tools/mkapk.py mkrepo.py          pure-Python apk packer and index signer (no abuild needed)
 tools/publish.sh                  build zip -> .apk -> signed index
+GitHub Releases                   large payloads that do not fit in git (e.g. the Swift toolchain archive)
 ```
 
 ## License

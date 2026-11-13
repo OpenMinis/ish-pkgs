@@ -1,0 +1,62 @@
+#!/bin/sh
+# swiftc: supplies the bundled musl sysroot (the toolchain prefix itself:
+# ../include, ../lib), the static Swift runtime, static-linking defaults
+# and the built-in macro plugin, then runs the real driver that sits next to
+# this script. The whole toolchain directory is relocatable.
+#   SWIFTC_DRIVER=new          use swift-driver instead of the C++ legacy driver
+#   SWIFTC_KEEP_SYMBOLS=1      do not add --gc-sections / -s when linking
+#   SWIFTC_ICU=full|small|tiny ICU data linked into Foundation programs (default: full)
+#   SWIFTC_STACK_SIZE=<bytes>  default stack size of non-main threads in linked
+#                              executables (default 8388608; musl's own default is
+#                              only 128 KB). 0 = leave musl's default.
+SELF=$(readlink -f "$0" 2>/dev/null) || SELF=$0
+[ -n "$SELF" ] || SELF=$0
+B=$(cd "$(dirname "$SELF")" && pwd)
+ROOT=$(cd "$B/.." && pwd)
+export SWIFT_AVOID_WARNING_USING_OLD_DRIVER=1
+PATH="$PATH:$ROOT/lib/swift/toolbin"; export PATH   # private `ar` (llvm-ar) as a last resort
+case "$1" in
+  -frontend|-modulewrap|-autolink-extract) exec "$B/swift-frontend" "$@" ;;
+esac
+link=1 inputs= debug= exe=
+for a in "$@"; do
+  case "$a" in
+    -h|-help|--help|-help-hidden|--help-hidden) exec "$B/swiftc-legacy-driver" -sdk "$ROOT" "$@" ;;
+    -emit-executable) exe=1 ;;
+    -c|-S|-emit-object|-emit-assembly|-emit-library|-emit-module|-emit-module-interface|-typecheck|-parse|\
+    -resolve-imports|-emit-ir|-emit-irgen|-emit-bc|-emit-sil|-emit-silgen|-emit-sib|-emit-sibgen|-emit-pcm|\
+    -emit-pch|-dump-ast|-dump-parse|-dump-pcm|-print-ast|-emit-imported-modules|-index-file|\
+    -scan-dependencies|-print-target-info|-emit-supported-features|-version|--version) link= ;;
+    -gnone) debug= ;;
+    -g|-g?*) debug=1 ;;
+    *.swift|*.o|*.a|@*) inputs=1 ;;
+  esac
+done
+[ -n "$exe" ] && link=1
+[ -n "$inputs" ] || link=
+set -- -resource-dir "$ROOT/lib/swift_static" -static-executable -use-ld=lld \
+  -load-plugin-executable "$B/swift-builtin-macros#SwiftMacros,ObservationMacros,FoundationMacros,TestingMacros" "$@"
+if [ -n "$link" ]; then
+  case "${SWIFTC_ICU:-full}" in
+    small|tiny) set -- "$@" "$ROOT/lib/swift_static/icu-data/icudata-$SWIFTC_ICU.o" ;;
+  esac
+  # smaller executables by default; keep everything when debug info was requested
+  [ -n "$SWIFTC_KEEP_SYMBOLS$debug" ] || set -- "$@" -Xlinker --gc-sections -Xlinker -s
+  case "${SWIFTC_STACK_SIZE-8388608}" in
+    ""|0) ;;
+    *) set -- "$@" -Xlinker -z -Xlinker "stack-size=${SWIFTC_STACK_SIZE-8388608}" ;;
+  esac
+fi
+if [ "$SWIFTC_DRIVER" = new ]; then
+  # swift-driver insists on <sdk>/usr/lib/swift_static when given -sdk; hand the
+  # sysroot to clang directly instead
+  exec "$B/swift-driver" --driver-mode=swiftc -nonlib-dependency-scanner \
+    -Xcc "--sysroot=$ROOT" -Xclang-linker "--sysroot=$ROOT" "$@"
+fi
+# the legacy driver has no -incremental (SwiftPM passes it); drop it quietly
+n=$#
+while [ $n -gt 0 ]; do
+  a=$1; shift; n=$((n-1))
+  [ "$a" = -incremental ] || set -- "$@" "$a"
+done
+exec "$B/swiftc-legacy-driver" -sdk "$ROOT" "$@"

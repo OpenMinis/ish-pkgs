@@ -1,0 +1,118 @@
+#!/bin/sh
+# swift-launcher — Bootstrap launcher for Swift on iSH (OpenMinis/ish-pkgs)
+#
+# When invoked (as swift, swiftc, swift-build, etc.), it checks whether the full
+# toolchain is present in /usr/local/swift. If not, it automatically downloads and
+# installs the prebuilt release from GitHub, verifies SHA256, and unpacks it.
+# Once installed, all subsequent invocations transparently pass through with zero overhead.
+
+set -e
+
+SWIFT_ROOT="/usr/local/swift"
+SWIFT_VERSION="6.4.2"
+TAG="v${SWIFT_VERSION}"
+ASSET_NAME="swift-ish-arm64-${TAG}.tar.zst"
+EXPECTED_SHA256="d8e9257ce1f0224b92a4efedfd7048518108ab5d373764e9977634af49ec2a0d"
+
+# Release download URLs (supports SWIFT_DOWNLOAD_URL override)
+DEFAULT_URL="https://github.com/OpenMinis/ish-pkgs/releases/download/${TAG}/${ASSET_NAME}"
+DOWNLOAD_URL="${SWIFT_DOWNLOAD_URL:-$DEFAULT_URL}"
+
+CMD_NAME="$(basename "$0")"
+
+ensure_installed() {
+    if [ -x "${SWIFT_ROOT}/bin/${CMD_NAME}" ] || [ -x "${SWIFT_ROOT}/bin/swiftc" ]; then
+        return 0
+    fi
+
+    echo "================================================================="
+    echo "[swift] First-run setup: Swift ${SWIFT_VERSION} toolchain not found."
+    echo "[swift] Downloading prebuilt static toolchain from GitHub Release..."
+    echo "[swift] URL: ${DOWNLOAD_URL}"
+    echo "================================================================="
+
+    # Check prerequisites
+    MISSING=""
+    command -v zstd >/dev/null 2>&1 || MISSING="${MISSING} zstd"
+    command -v tar >/dev/null 2>&1 || MISSING="${MISSING} tar"
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        MISSING="${MISSING} curl"
+    fi
+
+    if [ -n "${MISSING}" ]; then
+        echo "[swift] Error: Missing required tools to unpack: ${MISSING}"
+        echo "[swift] Please install them first: apk add ${MISSING}"
+        exit 1
+    fi
+
+    TMP_DIR="$(mktemp -d /tmp/swift-install.XXXXXX)"
+    ARCHIVE="${TMP_DIR}/${ASSET_NAME}"
+
+    cleanup() {
+        rm -rf "${TMP_DIR}"
+    }
+    trap cleanup EXIT INT TERM
+
+    echo "[swift] Downloading archive (~173 MB, this happens only once)..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fSL --progress-bar "${DOWNLOAD_URL}" -o "${ARCHIVE}"
+    else
+        wget -q --show-progress "${DOWNLOAD_URL}" -O "${ARCHIVE}"
+    fi
+
+    echo "[swift] Verifying integrity..."
+    ACTUAL_SHA256="$(sha256sum "${ARCHIVE}" | cut -d' ' -f1)"
+    if [ "${ACTUAL_SHA256}" != "${EXPECTED_SHA256}" ]; then
+        echo "[swift] SHA256 mismatch!"
+        echo "  Expected: ${EXPECTED_SHA256}"
+        echo "  Actual:   ${ACTUAL_SHA256}"
+        exit 1
+    fi
+    echo "[swift] Checksum verified: OK"
+
+    echo "[swift] Unpacking into ${SWIFT_ROOT}..."
+    mkdir -p "${SWIFT_ROOT}"
+    zstd -dc "${ARCHIVE}" | tar -xf - -C "${SWIFT_ROOT}"
+
+    # Ensure executable permissions
+    chmod -R +x "${SWIFT_ROOT}/bin" 2>/dev/null || true
+
+    echo "================================================================="
+    echo "[swift] Swift ${SWIFT_VERSION} successfully installed!"
+    echo "================================================================="
+}
+
+# Subcommands handled directly by launcher
+case "$1" in
+    --status)
+        echo "Swift iSH Launcher version: ${SWIFT_VERSION}"
+        if [ -x "${SWIFT_ROOT}/bin/swiftc" ]; then
+            echo "Payload: Installed at ${SWIFT_ROOT}"
+            "${SWIFT_ROOT}/bin/swiftc-info" 2>/dev/null || "${SWIFT_ROOT}/bin/swiftc" -version
+        else
+            echo "Payload: Not installed yet (will auto-download on first use)"
+        fi
+        exit 0
+        ;;
+    --install-payload)
+        # Force download now
+        rm -rf "${SWIFT_ROOT}"
+        ;;
+    --uninstall-payload)
+        echo "Removing ${SWIFT_ROOT}..."
+        rm -rf "${SWIFT_ROOT}"
+        echo "Done. Future invocations of swift/swiftc will trigger re-download."
+        exit 0
+        ;;
+esac
+
+ensure_installed
+
+# Forward execution to the real toolchain binary
+TARGET="${SWIFT_ROOT}/bin/${CMD_NAME}"
+if [ ! -x "${TARGET}" ]; then
+    # Fallback if invoked under an unlinked name
+    TARGET="${SWIFT_ROOT}/bin/swift"
+fi
+
+exec "${TARGET}" "$@"

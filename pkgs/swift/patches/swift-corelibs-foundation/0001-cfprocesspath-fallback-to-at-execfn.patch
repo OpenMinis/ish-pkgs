@@ -1,0 +1,59 @@
+CoreFoundation: find the process path without /proc/self/exe.
+
+What: _CFProcessPath retries readlink("/proc/self/exe") and then uses
+getauxval(AT_EXECFN) (resolved with realpath) before giving up.
+Why: with an empty process path CFBundleGetMainBundle() returns NULL and
+Bundle.main traps on first use. That killed SwiftPM (and would kill any program
+using Bundle.main) whenever the readlink failed, which happens intermittently
+on iSH.
+Upstream: likely acceptable.
+
+Apply inside the `swift-corelibs-foundation` repository: git apply <this file>
+---
+diff --git a/Sources/CoreFoundation/CFPlatform.c b/Sources/CoreFoundation/CFPlatform.c
+--- a/Sources/CoreFoundation/CFPlatform.c
++++ b/Sources/CoreFoundation/CFPlatform.c
+@@ -105,6 +105,11 @@
+ }
+ #endif // TARGET_OS_WIN32
+ 
++#if TARGET_OS_LINUX
++#include <sys/auxv.h>
++#include <limits.h>
++#endif
++
+ static const char *__CFProcessPath = NULL;
+ static const char *__CFprogname = NULL;
+ 
+@@ -181,14 +186,28 @@
+ #elif TARGET_OS_LINUX
+     char buf[CFMaxPathSize + 1];
+ 
+-    ssize_t res = readlink("/proc/self/exe", buf, CFMaxPathSize);
++    // readlink("/proc/self/exe") can fail (no procfs, or emulated kernels where
++    // it fails intermittently). Retry, then fall back to the kernel-provided
++    // AT_EXECFN path, so that the main bundle (Bundle.main) can still be found.
++    ssize_t res = -1;
++    for (int attempt = 0; attempt < 8 && res <= 0; attempt++) {
++        res = readlink("/proc/self/exe", buf, CFMaxPathSize);
++    }
+     if (res > 0) {
+         // null terminate, readlink does not
+         buf[res] = 0;
+         _CFSetProgramNameFromPath(buf);
+     } else {
+-        __CFProcessPath = "";
+-        __CFprogname = __CFProcessPath;
++        const char *execfn = (const char *)getauxval(AT_EXECFN);
++        char resolved[PATH_MAX];
++        if (execfn && execfn[0] && realpath(execfn, resolved)) {
++            _CFSetProgramNameFromPath(resolved);
++        } else if (execfn && execfn[0] == '/') {
++            _CFSetProgramNameFromPath(execfn);
++        } else {
++            __CFProcessPath = "";
++            __CFprogname = __CFProcessPath;
++        }
+     }
+     return __CFProcessPath;
+ #elif TARGET_OS_WASI

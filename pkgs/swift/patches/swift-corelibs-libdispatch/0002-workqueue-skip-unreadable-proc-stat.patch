@@ -1,0 +1,27 @@
+Workqueue monitor: skip threads whose /proc/<tid>/stat cannot be opened.
+
+What: the thread pool monitor counts runnable workers by reading
+/proc/<tid>/stat; an open() failure was a DISPATCH_CLIENT_CRASH. The thread is
+now simply not counted as running.
+Why: without procfs (or with a flaky one, as on iSH) this is a silent SIGTRAP.
+Upstream: likely acceptable.
+
+Apply inside the `swift-corelibs-libdispatch` repository: git apply <this file>
+---
+diff --git a/src/event/workqueue.c b/src/event/workqueue.c
+--- a/src/event/workqueue.c
++++ b/src/event/workqueue.c
+@@ -162,8 +162,11 @@
+ 
+ 		fd = open(path, O_RDONLY | O_NONBLOCK);
+ 		if (unlikely(fd == -1)) {
+-			DISPATCH_CLIENT_CRASH(tid,
+-					"workq: registered worker exited prematurely");
++			// procfs may be missing or unreliable (containers without /proc,
++			// sandboxes, emulators): treat the worker as not runnable
++			// instead of crashing the process.
++			_dispatch_debug("workq: Failed to open %s", path);
++			continue;
+ 		} else {
+ 			bytes_read = read(fd, buf, sizeof(buf)-1);
+ 			(void)close(fd);

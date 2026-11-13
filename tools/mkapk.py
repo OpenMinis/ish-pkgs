@@ -29,6 +29,10 @@ def build(root, name, ver, arch, desc, license_, out, url="", origin=None, depen
     size = 0
     for dp, dns, fns in os.walk(root):
         dns.sort()
+        # 指向目录的软链会出现在 dns 里: 按软链处理并且不再下降
+        for d in [d for d in dns if os.path.islink(os.path.join(dp, d))]:
+            dns.remove(d)
+            fns.append(d)
         rel = os.path.relpath(dp, root)
         if rel != ".":
             ti = tarfile.TarInfo(rel.replace(os.sep, "/"))
@@ -40,6 +44,18 @@ def build(root, name, ver, arch, desc, license_, out, url="", origin=None, depen
             entries.append((ti, None))
         for fn in sorted(fns):
             p = os.path.join(dp, fn)
+            if os.path.islink(p):          # 符号链接: 只存目标路径,不带内容/校验和
+                ti = tarfile.TarInfo(os.path.relpath(p, root).replace(os.sep, "/"))
+                ti.type = tarfile.SYMTYPE
+                ti.linkname = os.readlink(p)
+                # apk 要求每个条目带 checksum: 软链的校验和 = sha1(链接目标字符串)
+                ti.pax_headers = {"APK-TOOLS.checksum.SHA1": hashlib.sha1(ti.linkname.encode()).hexdigest()}
+                ti.mode = 0o777
+                ti.mtime = 0
+                ti.uid = ti.gid = 0
+                ti.uname = ti.gname = "root"
+                entries.append((ti, None))
+                continue
             data = open(p, "rb").read()
             ti = tarfile.TarInfo(os.path.relpath(p, root).replace(os.sep, "/"))
             ti.size = len(data)

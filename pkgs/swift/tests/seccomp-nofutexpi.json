@@ -1,0 +1,5 @@
+{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[
+ {"names":["futex"],"action":"SCMP_ACT_ERRNO","errnoRet":38,"args":[{"index":1,"value":6,"valueTwo":127,"op":"SCMP_CMP_MASKED_EQ"}]},
+ {"names":["futex"],"action":"SCMP_ACT_ERRNO","errnoRet":38,"args":[{"index":1,"value":7,"valueTwo":127,"op":"SCMP_CMP_MASKED_EQ"}]},
+ {"names":["futex"],"action":"SCMP_ACT_ERRNO","errnoRet":38,"args":[{"index":1,"value":8,"valueTwo":127,"op":"SCMP_CMP_MASKED_EQ"}]}
+]}

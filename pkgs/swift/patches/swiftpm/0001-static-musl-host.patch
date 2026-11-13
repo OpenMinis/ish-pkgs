@@ -1,0 +1,118 @@
+SwiftPM as a statically linked musl executable.
+
+What (all but the test-discovery change are #if canImport(Musl)):
+- default to the native build system and do not print its deprecation warning:
+  the Swift Build backend locates itself with dladdr(), impossible in a static
+  executable;
+- test discovery: when libIndexStore cannot be loaded (no dlopen) emit discovery
+  sources without XCTest cases instead of failing; swift-testing is unaffected;
+- safeExec: musl rejects resetting its reserved real-time signals (32-34) with
+  EINVAL; do not warn about that.
+Why: needed to run `swift build/run/test` from a static toolchain. Not specific
+to iSH.
+Upstream: the signal change is acceptable; the others are specific to a static host.
+
+Apply inside the `swiftpm` repository: git apply <this file>
+---
+diff --git a/Sources/CoreCommands/Options.swift b/Sources/CoreCommands/Options.swift
+--- a/Sources/CoreCommands/Options.swift
++++ b/Sources/CoreCommands/Options.swift
+@@ -549,12 +549,23 @@
+     @Option(help: "Check that targets only import their explicitly declared dependencies.")
+     public var explicitTargetDependencyImportCheck: TargetDependencyImportCheckingMode = .none
+ 
++    /// Statically linked (musl) SwiftPM: the Swift Build service locates itself
++    /// with dladdr(), which a static executable cannot do, so the native build
++    /// system is the default there.
++    static var defaultBuildSystemKind: BuildSystemProvider.Kind {
++        #if canImport(Musl)
++        return .native
++        #else
++        return .swiftbuild
++        #endif
++    }
++
+     /// The build system to use.
+     @Option(
+         name: .customLong("build-system"),
+         help: "Specify the build system to use.",
+     )
+-    var _buildSystem: BuildSystemProvider.Kind = .swiftbuild
++    var _buildSystem: BuildSystemProvider.Kind = BuildOptions.defaultBuildSystemKind
+ 
+     /// The Debug Information Format to use.
+     @Option(name: .customLong("debug-info-format", withSingleDash: true), help: "The Debug Information Format to use.")
+diff --git a/Sources/CoreCommands/SwiftCommandState.swift b/Sources/CoreCommands/SwiftCommandState.swift
+--- a/Sources/CoreCommands/SwiftCommandState.swift
++++ b/Sources/CoreCommands/SwiftCommandState.swift
+@@ -153,7 +153,12 @@
+ 
+         swiftCommandState.releaseLockIfNeeded()
+ 
+-        if globalOptions.build._buildSystem != .swiftbuild {
++        #if canImport(Musl)
++        let warnAboutBuildSystem = false // native is the only usable build system in a static SwiftPM
++        #else
++        let warnAboutBuildSystem = true
++        #endif
++        if warnAboutBuildSystem, globalOptions.build._buildSystem != .swiftbuild {
+             swiftCommandState.observabilityScope.emit(
+                 .deprecatedBuildSystem(buildSystem: globalOptions.build._buildSystem)
+             )
+@@ -253,7 +258,12 @@
+ 
+         swiftCommandState.releaseLockIfNeeded()
+ 
+-        if globalOptions.build._buildSystem != .swiftbuild {
++        #if canImport(Musl)
++        let warnAboutBuildSystem = false // native is the only usable build system in a static SwiftPM
++        #else
++        let warnAboutBuildSystem = true
++        #endif
++        if warnAboutBuildSystem, globalOptions.build._buildSystem != .swiftbuild {
+             swiftCommandState.observabilityScope.emit(
+                 .deprecatedBuildSystem(buildSystem: globalOptions.build._buildSystem)
+             )
+diff --git a/Sources/Build/LLBuildCommands.swift b/Sources/Build/LLBuildCommands.swift
+--- a/Sources/Build/LLBuildCommands.swift
++++ b/Sources/Build/LLBuildCommands.swift
+@@ -122,7 +122,25 @@
+         }
+ 
+         let index = BuildOperation.indexStore(for: self.context.productsBuildParameters)
+-        let api = try self.context.indexStoreAPI.get()
++        let apiResult = self.context.indexStoreAPI
++        if case .failure = apiResult {
++            // A statically linked SwiftPM cannot dlopen() libIndexStore, so XCTest
++            // discovery is unavailable. Emit discovery sources that contribute no
++            // XCTest cases instead of failing the build; swift-testing tests are
++            // discovered at run time and are unaffected.
++            for file in outputs {
++                let isMain = file.basename == TestDiscoveryTool.mainFileName
++                try fileSystem.writeIfChanged(path: file, string: isMain ? """
++                    #if canImport(XCTest)
++                    import XCTest
++                    public func __allDiscoveredTests() -> [XCTestCaseEntry] { [] }
++                    #endif
++
++                    """ : "")
++            }
++            return
++        }
++        let api = try apiResult.get()
+         let store = try IndexStore.open(store: TSCAbsolutePath(index), api: api)
+ 
+         // FIXME: We can speed this up by having one llbuild command per object file.
+diff --git a/Sources/Commands/Utilities/TestingSupport.swift b/Sources/Commands/Utilities/TestingSupport.swift
+--- a/Sources/Commands/Utilities/TestingSupport.swift
++++ b/Sources/Commands/Utilities/TestingSupport.swift
+@@ -407,6 +407,9 @@
+         }
+         let prior = signal(i, SIG_DFL)
+         if unsafeBitCast(prior, to: OpaquePointer?.self) == unsafeBitCast(SIG_ERR, to: OpaquePointer?.self) {
++            // musl reserves real-time signals 32...34 for its own use and
++            // rejects changing them with EINVAL; that is not worth a warning.
++            if errno == EINVAL { continue }
+             let err = String(cString: strerror(errno))
+             observabilityScope.emit(warning: "safeExec: signal(\(i), SIG_DFL) failed: \(err)")
+         }

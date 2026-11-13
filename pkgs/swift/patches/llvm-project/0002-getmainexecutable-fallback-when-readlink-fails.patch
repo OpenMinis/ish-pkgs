@@ -1,0 +1,40 @@
+Support: getMainExecutable() must not return "" when /proc/self/exe exists
+but cannot be read.
+
+What: retry readlink a few times, then fall through to the argv[0]-based
+detection that is already used when /proc is absent.
+Why: on iSH the readlink fails intermittently; clang, lld and swift-frontend then
+could not find their resource directory, config file or ld.lld.
+Upstream: reasonable hardening, likely acceptable.
+
+Apply inside the `llvm-project` repository: git apply <this file>
+---
+diff --git a/llvm/lib/Support/Unix/Path.inc b/llvm/lib/Support/Unix/Path.inc
+--- a/llvm/lib/Support/Unix/Path.inc
++++ b/llvm/lib/Support/Unix/Path.inc
+@@ -254,10 +254,13 @@
+   const char *aPath = "/proc/self/exe";
+   if (sys::fs::exists(aPath)) {
+     // /proc is not always mounted under Linux (chroot for example).
+-    ssize_t len = ::readlink(aPath, exe_path, sizeof(exe_path));
+-    if (len < 0)
+-      return "";
+-
++    // The read can fail spuriously in some environments (sandboxes, emulators
++    // such as iSH), so retry a few times and otherwise fall back to the
++    // classical argv[0] based detection below instead of giving up.
++    ssize_t len = -1;
++    for (unsigned Attempt = 0; Attempt < 8 && len < 0; ++Attempt)
++      len = ::readlink(aPath, exe_path, sizeof(exe_path));
++    if (len >= 0) {
+     // Null terminate the string for realpath. readlink never null
+     // terminates its output.
+     len = std::min(len, ssize_t(sizeof(exe_path) - 1));
+@@ -278,6 +281,7 @@
+     if (realpath(exe_path, real_path))
+       return std::string(real_path);
+ #endif
++    }
+   }
+   // Fall back to the classical detection.
+   if (getprogpath(exe_path, argv0))
